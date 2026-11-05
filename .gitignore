@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+.env
+.env.*
+!.env.example
+.vs/
+.idea/
+.DS_Store
+TestResults/
+artifacts/
+*.user
+*.suo
