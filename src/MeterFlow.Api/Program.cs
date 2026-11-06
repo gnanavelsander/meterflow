@@ -1,4 +1,5 @@
 using MeterFlow.Api.Data;
+using MeterFlow.Api.Datasets;
 using MeterFlow.Api.Infrastructure;
 using MeterFlow.Api.Projects;
 using Microsoft.AspNetCore.Authorization;
@@ -46,6 +47,7 @@ app.MapGroup("/auth").WithTags("Identity").MapIdentityApi<IdentityUser>();
 var api = app.MapGroup("/api").RequireAuthorization(new AuthorizationPolicyBuilder(IdentityConstants.BearerScheme)
     .RequireAuthenticatedUser().Build());
 api.MapProjects();
+api.MapDatasets();
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))

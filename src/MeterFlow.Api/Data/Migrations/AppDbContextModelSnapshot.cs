@@ -22,6 +22,59 @@ namespace MeterFlow.Api.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("MeterFlow.Api.Datasets.EnergyDataset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId", "UploadedAt");
+
+                    b.ToTable("Datasets");
+                });
+
+            modelBuilder.Entity("MeterFlow.Api.Datasets.Measurement", b =>
+                {
+                    b.Property<Guid>("DatasetId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("BuildingId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("ConsumptionKwh")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)");
+
+                    b.HasKey("DatasetId", "BuildingId", "Timestamp");
+
+                    b.ToTable("Measurements");
+                });
+
             modelBuilder.Entity("MeterFlow.Api.Projects.EnergyProject", b =>
                 {
                     b.Property<Guid>("Id")
@@ -246,6 +299,28 @@ namespace MeterFlow.Api.Data.Migrations
                     b.HasKey("UserId", "LoginProvider", "Name");
 
                     b.ToTable("AspNetUserTokens", (string)null);
+                });
+
+            modelBuilder.Entity("MeterFlow.Api.Datasets.EnergyDataset", b =>
+                {
+                    b.HasOne("MeterFlow.Api.Projects.EnergyProject", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("MeterFlow.Api.Datasets.Measurement", b =>
+                {
+                    b.HasOne("MeterFlow.Api.Datasets.EnergyDataset", "Dataset")
+                        .WithMany()
+                        .HasForeignKey("DatasetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Dataset");
                 });
 
             modelBuilder.Entity("MeterFlow.Api.Projects.EnergyProject", b =>
