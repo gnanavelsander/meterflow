@@ -69,7 +69,7 @@ public static class JobEndpoints
             var csv = new StringBuilder("building_id,day,consumption_kwh,measured_hours,expected_hours,complete,missing_hour_ends\r\n");
             foreach (var row in rows)
                 csv.Append(row.BuildingId).Append(',').Append(row.Day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append(',')
-                    .Append(row.ConsumptionKwh?.ToString(CultureInfo.InvariantCulture) ?? "").Append(',')
+                    .Append(row.ConsumptionKwh?.ToString("0.######", CultureInfo.InvariantCulture) ?? "").Append(',')
                     .Append(row.MeasuredHours).Append(',').Append(row.ExpectedHours).Append(',').Append(row.Complete ? "true" : "false").Append(',')
                     .AppendJoin(';', row.MissingHourEnds.Select(x => x.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture))).Append("\r\n");
             return Results.File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv", $"analysis-{job.Id}.csv");
