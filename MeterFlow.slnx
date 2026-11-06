@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MeterFlow.Api/MeterFlow.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MeterFlow.Tests/MeterFlow.Tests.csproj" />
+  </Folder>
+</Solution>
