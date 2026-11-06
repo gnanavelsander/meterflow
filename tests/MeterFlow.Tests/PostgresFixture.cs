@@ -17,7 +17,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     }
     public async Task DisposeAsync() { if (container is not null) await container.DisposeAsync(); }
 }
-public sealed class ApiFactory(string connection, string keyPath) : WebApplicationFactory<Program>
+public sealed class ApiFactory(string connection, string keyPath, bool enableWorker = false) : WebApplicationFactory<Program>
 {
     public string ConnectionString => connection;
     private string admin = "";
@@ -34,7 +34,7 @@ public sealed class ApiFactory(string connection, string keyPath) : WebApplicati
         config.AddInMemoryCollection(new Dictionary<string,string?>
         {
             ["ConnectionStrings:Database"] = connection, ["Database:MigrateOnStartup"] = "true",
-            ["Worker:Enabled"] = "false", ["DataProtection:KeyPath"] = keyPath
+            ["Worker:Enabled"] = enableWorker.ToString(), ["DataProtection:KeyPath"] = keyPath
         }));
     public async Task DisposeDatabase()
     {

@@ -3,15 +3,31 @@ using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using MeterFlow.Api.Projects;
 using MeterFlow.Api.Datasets;
+using MeterFlow.Api.Jobs;
 namespace MeterFlow.Api.Data;
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbContext<IdentityUser>(options)
 {
     public DbSet<EnergyProject> Projects => Set<EnergyProject>();
     public DbSet<EnergyDataset> Datasets => Set<EnergyDataset>();
     public DbSet<Measurement> Measurements => Set<Measurement>();
+    public DbSet<AnalysisJob> Jobs => Set<AnalysisJob>();
     protected override void OnModelCreating(ModelBuilder model)
     {
         base.OnModelCreating(model);
+        model.Entity<AnalysisJob>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.HasOne(x => x.Dataset).WithMany().HasForeignKey(x => x.DatasetId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<IdentityUser>().WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Restrict);
+            e.Property(x => x.IdempotencyKey).HasMaxLength(128);
+            e.Property(x => x.RequestHash).HasMaxLength(64);
+            e.Property(x => x.AnalysisVersion).HasMaxLength(40);
+            e.Property(x => x.Status).HasMaxLength(16);
+            e.Property(x => x.ErrorCode).HasMaxLength(64);
+            e.Property(x => x.ResultJson).HasColumnType("jsonb");
+            e.HasIndex(x => new { x.OwnerId, x.IdempotencyKey }).IsUnique();
+            e.HasIndex(x => new { x.Status, x.AvailableAt, x.CreatedAt });
+        });
         model.Entity<EnergyDataset>(e =>
         {
             e.HasKey(x => x.Id);
