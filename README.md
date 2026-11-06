@@ -1,25 +1,35 @@
 # MeterFlow
 
-MeterFlow imports hourly building-energy readings, checks their quality, and runs daily consumption analysis in the background. It answers two separate questions: **how much energy was measured, and which hours are missing?** Zero consumption is a valid reading; missing consumption is never silently replaced with zero.
+MeterFlow is a C# backend for importing hourly energy readings and calculating daily consumption per building. It validates each CSV before saving it, runs analysis as a background job, and returns daily totals with the hours that are missing. A recorded zero counts as a measurement. A day without readings has `null` consumption.
 
-This is a small C# backend portfolio project: one ASP.NET Core API, one hosted worker, and PostgreSQL for users, measurements, durable jobs and results. No AI models, paid services or cloud account are required.
+One ASP.NET Core application hosts the API and an `AnalysisWorker`. PostgreSQL stores users, projects and measurements as well as the job queue and results. The main implementation is under [src/MeterFlow.Api](src/MeterFlow.Api).
 
-```mermaid
-flowchart LR
-    Client[HTTP client / Scalar] --> API[ASP.NET Core API]
-    API --> Validation[Validate entire CSV]
-    Validation --> DB[(PostgreSQL)]
-    API --> Jobs[Persist analysis job]
-    Jobs --> DB
-    Worker[BackgroundService] -->|Reserve with lease| DB
-    Worker --> Calculator[Daily totals and missing hours]
-    Calculator -->|Publish result with lease token| DB
-    DB -->|Owned status / JSON / CSV| API
-```
+## From CSV to result
 
-## Run the complete demo
+After signing in and creating a project, a client uploads a CSV and submits a separate analysis request for that dataset.
 
-Prerequisites: Docker with Compose v2, Python 3, and Git. The API binds to localhost; PostgreSQL stays inside the Compose network.
+| Step | Implementation |
+| --- | --- |
+| Check access and receive the upload | [DatasetEndpoints.MapDatasets](src/MeterFlow.Api/Datasets/DatasetEndpoints.cs) checks the project's owner and accepts the file as a raw `text/csv` body. |
+| Validate and save | [CsvImport.ReadAsync / Parse](src/MeterFlow.Api/Datasets/CsvImport.cs) checks the size, columns and readings. The upload handler saves the dataset metadata and all measurements in one transaction. |
+| Request an analysis | [JobEndpoints.MapJobs](src/MeterFlow.Api/Jobs/JobEndpoints.cs) validates the dataset and date range, then saves a job and returns HTTP 202. An `Idempotency-Key` lets a client repeat the request without creating another job. |
+| Reserve a job | [JobQueue.Claim](src/MeterFlow.Api/Jobs/JobQueue.cs) locks and updates one eligible row in PostgreSQL. Its lease is a reservation that expires after 30 seconds unless the worker renews it. |
+| Calculate and store the result | [JobProcessor.Process](src/MeterFlow.Api/Jobs/JobProcessor.cs) loads the readings and calls [AnalysisCalculator.Calculate](src/MeterFlow.Api/Analysis/AnalysisCalculator.cs). `JobQueue.Complete` saves the JSON result and success status together, provided the worker still holds the lease. |
+| Read or download | The routes in [JobEndpoints](src/MeterFlow.Api/Jobs/JobEndpoints.cs) check the job's owner before returning status, JSON or CSV. Results become available when the job succeeds. |
+
+Storing jobs in PostgreSQL keeps accepted work available after an API restart. A queued job can be claimed by the next worker. If a worker stops during processing, its unfinished job can be claimed again after the lease expires, up to three attempts. The new worker recalculates the result from the saved readings. [Architecture](docs/architecture.md) explains the SQL conditions that prevent an old worker from overwriting it.
+
+## Read the code
+
+Start with the [code guide](docs/code-guide.md), which follows the requests through their handlers and database writes. [Program.cs](src/MeterFlow.Api/Program.cs) connects authentication, routes and the worker. [ProjectEndpoints](src/MeterFlow.Api/Projects/ProjectEndpoints.cs) is a smaller example of an authenticated route, and [AppDbContext](src/MeterFlow.Api/Data/AppDbContext.cs) defines the relationships and indexes.
+
+The [data contract](docs/data-contract.md) covers UTC hour endings, partial totals and CSV validation. Imports are limited to 5 MiB, 50,000 readings and 100 buildings. Each analysis covers 1 to 31 complete UTC days.
+
+[Tests](tests/MeterFlow.Tests) include PostgreSQL integration tests for ownership, concurrent job claims and recovery after an interrupted attempt. The [test guide](docs/testing.md) records which checks ran locally and which ran in GitHub Actions. It also collects the current limits and deployment work still needed.
+
+## Run locally (optional)
+
+Use Docker with Compose v2, Python 3 and Git. These commands initialize a new checkout. Keep the existing `.env` password when reusing a database volume.
 
 ```sh
 git clone https://github.com/gnanavelsander/meterflow.git
@@ -28,50 +38,8 @@ cp .env.example .env
 python3 -c 'import pathlib,secrets; pathlib.Path(".env").write_text("POSTGRES_PASSWORD=" + secrets.token_hex(24) + "\n")'
 docker compose up --build -d
 curl --fail http://localhost:8080/health/ready
-python3 scripts/demo.py
 ```
 
-Wait until the health endpoint responds successfully before running the script. The password command initializes a **new checkout**; keep the same `.env` when reusing the database volume. The file is ignored by Git.
+Once the health endpoint responds successfully, run `python3 scripts/demo.py` or open [Scalar](http://localhost:8080/scalar/v1), the interactive API reference. The API listens on localhost and PostgreSQL stays inside the Compose network. No external service or cloud account is needed.
 
-Open [Scalar API reference](http://localhost:8080/scalar/v1) to send requests interactively, or run [the HTTP request collection](examples/meterflow.http) in a compatible editor. [The walkthrough](docs/demo.md) explains registration, bearer authentication, CSV upload, job polling and download.
-
-The script creates a synthetic account and project, verifies an invalid import is rejected, imports 26 readings, checks idempotency, and compares the result against [known answers](samples/expected-summary.json). It saves JSON and CSV in the ignored `artifacts/` directory. Building A has **23 kWh** and B **2.5 kWh** on January 1; January 2 has no readings and returns `null` consumption. Each run creates fresh demo resources.
-
-```sh
-docker compose down                 # Stop; retain database and token-key volumes
-# Optional: test that existing tokens and results survive an API restart
-# Start the stack again first if it is stopped:
-docker compose up -d
-python3 scripts/demo.py --verify-restart
-```
-
-## Find your way around
-
-| Location | Responsibility |
-| --- | --- |
-| [Program.cs](src/MeterFlow.Api/Program.cs) | Authentication, DI, error handling, routes and worker startup |
-| [Projects](src/MeterFlow.Api/Projects/ProjectEndpoints.cs) | Owner-scoped project creation and search |
-| [Datasets](src/MeterFlow.Api/Datasets/CsvImport.cs) | CSV validation and transactional import |
-| [Jobs](src/MeterFlow.Api/Jobs/JobQueue.cs) | Durable reservations, retries and fenced result publication |
-| [Analysis](src/MeterFlow.Api/Analysis/AnalysisCalculator.cs) | Pure daily calculations and missing-hour detection |
-| [Data](src/MeterFlow.Api/Data/AppDbContext.cs) | EF mappings, indexes and committed migrations |
-| [Tests](tests/MeterFlow.Tests) | Unit tests and real PostgreSQL integration tests |
-| [Samples](samples) / [scripts](scripts/demo.py) | Synthetic input, known answers and executable demonstration |
-
-Recommended reading: **[code guide](docs/code-guide.md)** → [CSV rules](docs/data-contract.md) → [job lifecycle and architecture](docs/architecture.md) → [testing](docs/testing.md). The code guide includes interview questions tied to actual implementation choices.
-
-## Build and test
-
-Install the .NET 10 SDK selected by [global.json](global.json). Docker must be running for integration tests; Testcontainers starts PostgreSQL automatically.
-
-```sh
-dotnet restore --locked-mode
-dotnet build -c Release --no-restore
-dotnet test -c Release --no-build
-# Unit tests only, without Docker:
-dotnet test -c Release --filter 'Category!=Integration'
-```
-
-[GitHub Actions](https://github.com/gnanavelsander/meterflow/actions/workflows/ci.yml) builds the solution, runs the tests against real PostgreSQL, builds the container image and exercises the Compose demo. See [verification and limitations](docs/testing.md) for what is checked and what is outside this version.
-
-The scope is deliberately bounded: immutable datasets, at most 5 MiB / 50,000 rows / 100 buildings per import, and 1–31 UTC days per analysis. There is no prediction, organisation administration or public write-enabled deployment. Identity email delivery, retention/deletion, production secret storage and operational monitoring need further work before a public deployment.
+The [walkthrough](docs/demo.md) includes the HTTP request collection, expected results and restart commands. For building and testing with the .NET SDK, see [test commands](docs/testing.md#run-the-tests).

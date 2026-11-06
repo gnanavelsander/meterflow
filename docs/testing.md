@@ -1,8 +1,8 @@
-# Tests, verification and limits
+# Tests and current limits
 
-## Commands
+## Run the tests
 
-Run from the repository root with .NET 10 and Docker running:
+Use the .NET 10 SDK selected by [global.json](../global.json). Run these commands from the repository root with Docker running:
 
 ```sh
 dotnet restore --locked-mode
@@ -10,54 +10,79 @@ dotnet build -c Release --no-restore
 dotnet test -c Release --no-build
 ```
 
-[PostgresFixture](../tests/MeterFlow.Tests/PostgresFixture.cs) starts a real `postgres:17` container. Each integration test gets a separate database, applies the committed migrations, and drops the database on disposal. There is no EF in-memory or SQLite substitute for locking tests. To use a separately provisioned **test-only** PostgreSQL instance instead of Docker, set `METERFLOW_TEST_DB` to an Npgsql connection string whose role can create/drop test databases. Never point this at production. The test harness creates random `test_*` databases; it does not create missing users or roles.
+[PostgresFixture.InitializeAsync](../tests/MeterFlow.Tests/PostgresFixture.cs) uses Testcontainers to start `postgres:17`. `ApiFactory.Create` gives each integration test a separate database, and application startup applies the committed migrations. `DisposeDatabase` drops that test database when the test finishes. The locking and concurrent-insert tests run against PostgreSQL, not an in-memory substitute.
 
-Without Docker or PostgreSQL:
+To use an existing test instance, set `METERFLOW_TEST_DB` to its Npgsql connection string. The database role must be able to create and drop databases. Use a test-only instance because the harness creates and drops randomly named `test_*` databases. It expects the role and server to exist already.
+
+Without Docker or PostgreSQL, run only the unit tests:
 
 ```sh
 dotnet test -c Release --filter 'Category!=Integration'
 ```
 
-This runs unit tests only and does not prove database behavior.
+These tests cover parsing and calculation rules. They do not exercise database behavior.
 
-## Coverage map
+## What the tests check
 
-| Test source | What it establishes |
+| Source | Checks |
 | --- | --- |
-| [CsvImportTests](../tests/MeterFlow.Tests/CsvImportTests.cs) | Strict headers, malformed rows, invalid numbers/times, negatives, duplicate readings, encoding, byte and row limits, preservation of zero |
-| [AnalysisTests](../tests/MeterFlow.Tests/AnalysisTests.cs) | Midnight interval ownership, daily totals, zero vs missing, partial completeness and retry classification |
-| [ApiTests](../tests/MeterFlow.Tests/ApiTests.cs) | Identity login, project ownership, pagination, health, OpenAPI and Problem Details |
-| [DatasetApiTests](../tests/MeterFlow.Tests/DatasetApiTests.cs) | Owner-scoped imports/metadata and no dataset after invalid upload |
-| [JobApiTests](../tests/MeterFlow.Tests/JobApiTests.cs) | Concurrent idempotency, conflict, validation before acceptance, job/result/export ownership, competing claims, stale-token fences, bounded retries, abandoned final attempt, hosted worker over a persisted queue |
-| [scripts/demo.py](../scripts/demo.py) | Real HTTP registration-to-CSV workflow against the built Compose image, known sample answers and optional restart persistence |
+| [CsvImportTests](../tests/MeterFlow.Tests/CsvImportTests.cs) | Header and row validation, malformed quoting, invalid numbers and timestamps, negatives, duplicates, encoding, byte and row limits, and preservation of zero readings. |
+| [AnalysisTests](../tests/MeterFlow.Tests/AnalysisTests.cs) | Assignment of midnight readings to the previous day, daily totals, zero versus missing readings, partial completeness and retry classification. |
+| [ApiTests](../tests/MeterFlow.Tests/ApiTests.cs) | Identity login, project ownership, pagination, health endpoints, OpenAPI and Problem Details. |
+| [DatasetApiTests](../tests/MeterFlow.Tests/DatasetApiTests.cs) | Ownership checks on upload and metadata access, and rejection without creating a dataset. |
+| [JobApiTests](../tests/MeterFlow.Tests/JobApiTests.cs) | Simultaneous idempotent submissions, conflicting settings, validation before acceptance, access to jobs and exports, competing claims, rejected stale-worker updates, retry limits and processing a persisted job in a new application instance. |
+| [scripts/demo.py](../scripts/demo.py) | HTTP requests from registration through CSV export against the Compose image, checked against the sample answers. With `--verify-restart`, it also retrieves the existing result after restarting the API. |
 
-The crash-recovery test deliberately expires a reserved job's lease and starts another claim against PostgreSQL. It checks the database state transition and stale-token fence; it does not simulate an OS-level process kill at every possible instruction. The hosted-worker test starts a new application instance over a previously queued job. The Compose demo additionally exercises an API restart and reads the previous result with the existing token.
+`Concurrent_claims_and_crash_recovery_fence_stale_workers` expires a reserved job's lease in PostgreSQL, claims it with a new worker and verifies that the old token can no longer renew, complete or fail the job. It exercises the recovery state transition without killing a process at an arbitrary instruction.
 
-[CI](../.github/workflows/ci.yml) runs build/test and a separate Docker Compose demonstration. It uploads TRX test reports and synthetic result files. Service logs are collected on failure; credentials and bearer tokens are not intentionally printed by the scripts. Its temporary database password is generated per run and is not committed.
+`Hosted_worker_processes_a_previously_queued_job` starts another application instance over the same database and waits for its hosted worker to finish a queued job. The Compose restart check covers a different case: it restarts the API after success and confirms that the original token still retrieves the same result.
 
-## Verification recorded for this delivery
+## GitHub Actions
 
-The implementation workstation ran the Release build and unit tests successfully. Its Docker daemon was unavailable, so PostgreSQL integration tests and the complete container demo were verified in **GitHub Actions**, not claimed as local runs. [The workflow history](https://github.com/gnanavelsander/meterflow/actions/workflows/ci.yml) and each pull request's checks provide the exact run/commit evidence. The final successful check set covers 26 tests plus the Compose demonstration and restart check.
+The [CI workflow](../.github/workflows/ci.yml) has separate test and demo jobs. The test job restores locked dependencies, builds in Release mode and runs the suite against PostgreSQL. It uploads TRX test reports. The demo job builds the container image, starts the Compose stack and runs `python3 scripts/demo.py --verify-restart`.
 
-## Known boundaries
+Successful demo runs upload the synthetic JSON and CSV results. Failed runs collect service logs. CI generates a temporary database password for each run, and the scripts keep credentials and bearer tokens out of their printed output.
 
-- Input is already hourly interval energy in UTC. No local-time conversion, cumulative-meter conversion or estimation is performed.
-- The entire accepted CSV is parsed in memory, then persisted; limits are intentional. Analysis loads up to 50,000 measurements and computes at most 3,100 building/day rows. Result endpoints return the bounded result in one response.
-- Data and successful results are immutable through the API. There is no deletion, retention, failed-job manual requeue or account management UI. Use a new idempotency key for an intentional new job.
-- Attempts are limited to three, including claims recovered after crashes. An extended outage or repeated interruptions can exhaust a job; no automatic infinite retries occur.
-- Leases protect publication, not exactly-once computation. No performance/load, chaos, security penetration or high-availability qualification has been performed.
-- Registration/login are suitable for a local demonstration. Email confirmation/recovery delivery, rate limiting, external identity federation, HTTPS deployment, protected key storage and backups are not configured.
-- Health readiness tests database connectivity, not queue freshness. There are no metrics or alerts for stalled workers.
-- Startup migrations are for local single-instance use. Coordinate schema changes separately before scaling application instances.
-- Images and Actions use major-version tags; NuGet packages are locked. Full container/action digest pinning and automated dependency updates are future work.
+## Recorded verification
 
-## Developing schema changes
+The first complete implementation is recorded at commit [`b04cba9`](https://github.com/gnanavelsander/meterflow/commit/b04cba9006dfa33b336e49cde2d9c2c8e8d2336b). Its [main-branch CI run](https://github.com/gnanavelsander/meterflow/actions/runs/42200002072) passed both jobs.
 
-The [design-time factory](../src/MeterFlow.Api/Data/DesignTimeDbContextFactory.cs) lets EF generate migrations without a live database or a checked-in connection password.
+| Environment | Completed checks |
+| --- | --- |
+| Local development machine | Release build, 17 unit tests, OpenAPI and Scalar HTTP checks, Compose configuration and documentation links. |
+| GitHub Actions | All 26 tests, including PostgreSQL integration tests, plus the container build, complete HTTP demo and restart check. |
+
+The local Docker daemon was unavailable for that verification. The full database workflow was verified in GitHub Actions, not locally. [Workflow history](https://github.com/gnanavelsander/meterflow/actions/workflows/ci.yml) and pull request checks show subsequent runs and the commits they tested.
+
+## Data and processing limits
+
+Imports accept hourly interval energy in UTC. They do not convert cumulative meter values or local times, and the analysis does not estimate missing consumption. The [data contract](data-contract.md) defines accepted values and result fields.
+
+Parsing holds the upload in memory. Analysis then loads up to 50,000 readings and produces at most 3,100 building/day rows, from the limit of 100 buildings and 31 days. Result endpoints return that result in one response. These are input limits, not measured throughput figures.
+
+Datasets and successful results are immutable through the API. Deletion, retention policies, manual requeue of a failed job and an account management interface are not implemented. A new idempotency key creates a new analysis request when another run is needed.
+
+A job has at most three attempts, including claims after an interruption. Repeated failures or interruptions can exhaust those attempts. Computation can occur more than once, while the lease checks restrict which worker may publish the result. See [restart behavior](architecture.md#what-happens-on-restart) for each stored job state.
+
+No load testing, fault-injection campaign, penetration testing or high-availability assessment has been performed. The tests above establish specific calculation and database behaviors.
+
+## Deployment and maintenance
+
+The Compose setup binds the API to localhost and keeps PostgreSQL inside its network. No public deployment is included. Several operational concerns remain before exposing it publicly:
+
+- Identity email confirmation and recovery delivery, rate limiting and external identity federation are not configured.
+- HTTPS deployment and protected secret storage need configuration. Data Protection keys persist in a local volume but are not encrypted at rest. Backups are not configured.
+- `/health/ready` checks database connectivity. There are no metrics or alerts for queue age or worker progress.
+- Startup migrations suit the local single-instance setup. Multiple application instances need a coordinated schema migration step.
+- Container images and GitHub Actions use major-version tags. NuGet dependencies are locked. Container and action digest pinning and automated dependency updates are not configured.
+
+## Schema changes
+
+The [design-time factory](../src/MeterFlow.Api/Data/DesignTimeDbContextFactory.cs) supplies EF with the model configuration for generating migrations. It does not require a live database or a checked-in password.
 
 ```sh
 dotnet tool restore
 dotnet ef migrations add MeaningfulName --project src/MeterFlow.Api --output-dir Data/Migrations
 ```
 
-Review generated SQL and model changes, then rerun PostgreSQL integration tests. Existing migrations are committed; ordinary Compose startup applies them automatically.
+Review the generated schema changes and rerun the PostgreSQL tests. Existing migrations are committed, and Compose startup applies them automatically.
