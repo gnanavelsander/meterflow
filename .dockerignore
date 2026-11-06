@@ -6,3 +6,4 @@
 TestResults
 artifacts
 **/.keys
+**/__pycache__

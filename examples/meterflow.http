@@ -1,0 +1,63 @@
+# REST Client (VS Code / compatible HTTP client). Run requests in order.
+# Synthetic local account only. Change the email if you repeat registration.
+@base = http://localhost:8080
+@email = synthetic-demo@example.test
+@password = Synthetic-Demo-Password1!
+
+### Register
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"email":"{{email}}","password":"{{password}}"}
+
+### Login: the returned accessToken is an opaque Identity bearer token, not a JWT.
+# @name login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email":"{{email}}","password":"{{password}}"}
+
+### Create a project
+# @name project
+POST {{base}}/api/projects/
+Authorization: Bearer {{login.response.body.accessToken}}
+Content-Type: application/json
+
+{"name":"Synthetic campus","description":"Hourly energy quality checks"}
+
+### Import a raw CSV body (not multipart)
+# @name dataset
+POST {{base}}/api/projects/{{project.response.body.id}}/datasets?filename=hourly-energy.csv
+Authorization: Bearer {{login.response.body.accessToken}}
+Content-Type: text/csv
+
+< ../samples/hourly-energy.csv
+
+### Queue analysis. Change key when changing dataset or date range.
+# @name job
+POST {{base}}/api/jobs
+Authorization: Bearer {{login.response.body.accessToken}}
+Content-Type: application/json
+Idempotency-Key: synthetic-analysis-1
+
+{"datasetId":"{{dataset.response.body.id}}","startDate":"2026-01-01","endDateExclusive":"2026-01-03"}
+
+### Poll until succeeded
+GET {{base}}/api/jobs/{{job.response.body.id}}
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Read daily results
+GET {{base}}/api/jobs/{{job.response.body.id}}/result
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Download CSV (empty consumption cell means no measurements)
+GET {{base}}/api/jobs/{{job.response.body.id}}/result.csv
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Filter and paginate jobs
+GET {{base}}/api/jobs?status=succeeded&page=1&pageSize=10
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Search owned projects
+GET {{base}}/api/projects/?search=campus&page=1&pageSize=10
+Authorization: Bearer {{login.response.body.accessToken}}

@@ -11,3 +11,5 @@ artifacts/
 *.user
 *.suo
 **/.keys/
+__pycache__/
+*.pyc
