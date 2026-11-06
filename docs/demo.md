@@ -1,31 +1,47 @@
-# Demonstration and API reference
+# Running the API and trying requests
 
-## Start and inspect
+## Start the local stack
 
-Follow [README startup](../README.md). Use `curl --fail http://localhost:8080/health/ready` until ready; inspect startup with `docker compose logs --tail=80 api`. Browse [Scalar](http://localhost:8080/scalar/v1) and [OpenAPI JSON](http://localhost:8080/openapi/v1.json).
+Follow the [README startup commands](../README.md#run-locally-optional) from a new checkout. Docker Compose starts PostgreSQL and the API. Check readiness before sending requests:
 
-The fastest complete workflow is:
+```sh
+curl --fail http://localhost:8080/health/ready
+```
+
+If the API is still starting, wait and repeat the command. Use `docker compose logs --tail=80 api` to inspect startup. [Scalar](http://localhost:8080/scalar/v1) displays the endpoints and their request examples, and the underlying document is available as [OpenAPI JSON](http://localhost:8080/openapi/v1.json).
+
+## Run the sample workflow
+
+From the repository root:
 
 ```sh
 python3 scripts/demo.py
-# Additionally verify the same token and results after restarting the API:
+```
+
+The script uses Python's standard library and creates a synthetic account and project. It first submits an invalid CSV and checks that no dataset was saved. It then imports the 26 readings in [hourly-energy.csv](../samples/hourly-energy.csv), submits an analysis, checks repeated and conflicting idempotency keys, and polls for the result. The output is compared with [expected-summary.json](../samples/expected-summary.json) before JSON and CSV files are saved under the ignored `artifacts/` directory.
+
+Each run creates new resources. Credentials and tokens stay in memory and are not printed. The workflow needs no external service or paid account.
+
+To also check persistence across an API restart, run:
+
+```sh
 python3 scripts/demo.py --verify-restart
 ```
 
-Python 3 uses only the standard library. The optional restart check invokes `docker compose` from the repository root. No account signup on an external service is involved. Credentials/tokens stay in memory and are not printed; each run creates a new synthetic account. Generated result files under `artifacts/` contain synthetic data only.
+After obtaining a successful result, this option invokes `docker compose restart api`, waits for readiness and retrieves the same result with the existing token. It checks a completed job and token persistence. Recovery of an interrupted job is covered separately by the [PostgreSQL tests](testing.md#what-the-tests-check).
 
-## Walk through requests yourself
+## Send the requests yourself
 
-[examples/meterflow.http](../examples/meterflow.http) contains the complete sequence for an HTTP-file client, with response variables linking requests. Its example password is intentionally synthetic and only for a local demo. Use a new example email if you repeat registration against existing data.
+[examples/meterflow.http](../examples/meterflow.http) contains the sequence for an HTTP-file client. Response variables carry IDs and the access token from one request to the next. Its password is synthetic and intended for local use. Change the example email if it is already registered in your database.
 
-In Scalar, execute the same sequence:
+In Scalar, follow these steps:
 
-1. `POST /auth/register`: supply a synthetic email and a password of at least 12 characters satisfying Identity's default uppercase/lowercase/digit/symbol requirements.
-2. `POST /auth/login`: use those credentials, leaving `useCookies` unset. Copy `accessToken` into Scalar's Bearer authentication field. Access tokens are opaque; do not decode them as JWTs. `/auth/refresh` accepts the returned refresh token when needed.
-3. `POST /api/projects/`: create `{"name":"Synthetic campus","description":"Hourly energy quality checks"}` and copy its `id`.
-4. `POST /api/projects/{projectId}/datasets?filename=hourly-energy.csv`: paste [the sample CSV](../samples/hourly-energy.csv) as the raw `text/csv` body. The returned `id` is the dataset ID.
-5. `POST /api/jobs`: supply the body below and an `Idempotency-Key`, such as `synthetic-analysis-1`. Replace the dataset placeholder. The 202 response includes `id`, `statusUrl`, `resultUrl`; the Location header also identifies the status resource.
-6. Poll `statusUrl` until `succeeded` or `failed`. Fetch JSON from `resultUrl` and CSV from the same URL with `.csv` appended.
+1. Call `POST /auth/register` with a synthetic email and a password of at least 12 characters. Identity requires uppercase and lowercase letters, a digit and a symbol.
+2. Call `POST /auth/login` with those credentials and leave `useCookies` unset. Copy the returned `accessToken` into Scalar's Bearer authentication field. This is an opaque Identity token, not a JWT. `/auth/refresh` accepts the returned refresh token when needed.
+3. Call `POST /api/projects/` with `{"name":"Synthetic campus","description":"Hourly energy quality checks"}` and copy its `id`.
+4. Call `POST /api/projects/{projectId}/datasets?filename=hourly-energy.csv` with [the sample CSV](../samples/hourly-energy.csv) as a raw `text/csv` body. Keep the returned dataset ID.
+5. Call `POST /api/jobs` with the body below and an `Idempotency-Key` such as `synthetic-analysis-1`. Replace the dataset placeholder. The 202 response includes the job `id`, `statusUrl` and `resultUrl`. The Location header also points to the status endpoint.
+6. Poll `statusUrl` until the job is `succeeded` or `failed`. After success, fetch JSON from `resultUrl` or download CSV by appending `.csv` to that URL.
 
 ```json
 {
@@ -35,7 +51,7 @@ In Scalar, execute the same sequence:
 }
 ```
 
-Expected summary:
+Expected result:
 
 | Building | UTC day | kWh | Measured hours | Missing hours |
 | --- | --- | ---: | ---: | ---: |
@@ -44,33 +60,55 @@ Expected summary:
 | B | 2026-01-01 | 2.5 | 2 | 22 |
 | B | 2026-01-02 | null | 0 | 24 |
 
-A's first reading and B's first reading are real zeros. A's midnight reading is included in January 1. January 2 has no readings, so it must not display zero. B's 2.5 kWh is a **partial** sum. See the [data contract](data-contract.md).
+Both buildings have a recorded zero in their first reading. A's reading at midnight on January 2 contributes to January 1, giving that day 24 readings. B has only two readings on January 1, so its 2.5 kWh is a partial sum. January 2 has no readings for either building and returns `null`. See the [data contract](data-contract.md#daily-analysis) for the exact interval rules.
 
-## Endpoints and error cases
+## Endpoint reference
 
 All `/api` routes require `Authorization: Bearer <accessToken>`.
 
-| Method / route | Purpose / response |
+| Method and route | Response |
 | --- | --- |
-| POST `/api/projects/` | Create owned project; 201 + Location |
-| GET `/api/projects/?search=campus&page=1&pageSize=20` | Search owned project names |
-| GET `/api/projects/{id}` | Owned project |
-| POST `/api/projects/{id}/datasets?filename=...` | All-or-nothing raw CSV import; 201 |
-| GET `/api/projects/{id}/datasets?page=1&pageSize=20` | Dataset metadata list |
-| GET `/api/datasets/{id}` | Filename, SHA-256, timestamp and row count |
-| POST `/api/jobs` | Queue/reuse analysis; 202, required Idempotency-Key |
-| GET `/api/jobs?status=queued&datasetId=...&page=1&pageSize=20` | Filter owned jobs |
-| GET `/api/jobs/{id}` | Status, attempts, settings and timestamps |
-| GET `/api/jobs/{id}/result` | Daily JSON after success |
-| GET `/api/jobs/{id}/result.csv` | Download after success |
-| GET `/health/live`, `/health/ready` | Process / database checks; no auth |
+| POST `/api/projects/` | Creates a project for the current user. Returns 201 and a Location header. |
+| GET `/api/projects/?search=campus&page=1&pageSize=20` | Searches the current user's projects by name. |
+| GET `/api/projects/{id}` | Returns a project owned by the current user. |
+| POST `/api/projects/{id}/datasets?filename=...` | Imports the entire CSV or rejects it. An accepted upload returns 201. |
+| GET `/api/projects/{id}/datasets?page=1&pageSize=20` | Lists dataset metadata for the project. |
+| GET `/api/datasets/{id}` | Returns filename, SHA-256, upload time and row count. |
+| POST `/api/jobs` | Saves or reuses an analysis job and returns 202. Requires an Idempotency-Key. |
+| GET `/api/jobs?status=queued&datasetId=...&page=1&pageSize=20` | Lists the current user's jobs with optional filters. |
+| GET `/api/jobs/{id}` | Returns status, attempts, settings and timestamps. |
+| GET `/api/jobs/{id}/result` | Returns daily JSON after success. |
+| GET `/api/jobs/{id}/result.csv` | Downloads the result as CSV after success. |
+| GET `/health/live`, `/health/ready` | Checks API availability or database connectivity without authentication. |
 
-List responses contain `page`, `pageSize`, `total`, `items`. Page defaults to 1 and size to 20; valid ranges are page 1–10,000, size 1–100. Ordering uses a timestamp and UUID tie-breaker; inserts between offset-based pages can shift items.
+List responses contain `page`, `pageSize`, `total` and `items`. Page defaults to 1 and size to 20. Accepted ranges are page 1 to 10,000 and size 1 to 100. Lists sort by timestamp with a UUID as a tie-breaker. Because pagination uses offsets, new inserts between requests can shift items between pages.
 
-Try [invalid-negative.csv](../samples/invalid-negative.csv): expect 422 with row 2 and a reason, and no new dataset. Replay a job with the same key and settings: expect the existing job. Change the range with the same key: expect 409. Request a result before success: expect 409. Use a second account's token for any resource: expect 404. No token: expect 401.
+## Try the error cases
 
-Validation errors use Problem Details with `requestId`; CSV errors additionally contain `errors` with row numbers. Identity may return its framework ValidationProblem error dictionary for registration/password failures. `X-Request-ID` is present for correlating requests with logs.
+| Request | Expected response |
+| --- | --- |
+| Upload [invalid-negative.csv](../samples/invalid-negative.csv) | 422 with a reason for row 2. No dataset is saved. |
+| Repeat a job's key with the same settings | 202 with the existing job ID. |
+| Change the date range while reusing that key | 409 for conflicting settings. |
+| Fetch a result before the job succeeds | 409 because no result is available yet. |
+| Fetch a resource owned by another account | 404. |
+| Fetch an `/api` resource without a valid token | 401. |
+
+Application validation errors use Problem Details with `requestId`. CSV errors add row numbers in `errors`. Identity registration and password failures can use its ValidationProblem error dictionary. The `X-Request-ID` response header identifies the request in logs.
 
 ## Stop, restart and reset
 
-`docker compose restart api` retains queued jobs, results and token keys. `docker compose down` stops the stack while retaining volumes. To intentionally delete **all local users, imports, jobs and keys**, run `docker compose down --volumes`. Do not change the database password in `.env` without also handling the existing database volume; the PostgreSQL image only initializes its password on first creation.
+```sh
+docker compose down
+```
+
+This stops the stack and retains the database and token-key volumes. To start it again and run the restart check:
+
+```sh
+docker compose up -d
+python3 scripts/demo.py --verify-restart
+```
+
+You can restart only the API with `docker compose restart api`. Stored jobs, results and token keys remain in the volumes.
+
+`docker compose down --volumes` deletes all local users, imports, jobs and keys. Keep the password in `.env` unchanged when reusing a database volume, since the PostgreSQL image sets that password only when initializing an empty volume.
