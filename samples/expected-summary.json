@@ -1,0 +1,34 @@
+[
+  {
+    "buildingId": "A",
+    "day": "2026-01-01",
+    "consumptionKwh": 23,
+    "measuredHours": 24,
+    "complete": true,
+    "missingCount": 0
+  },
+  {
+    "buildingId": "A",
+    "day": "2026-01-02",
+    "consumptionKwh": null,
+    "measuredHours": 0,
+    "complete": false,
+    "missingCount": 24
+  },
+  {
+    "buildingId": "B",
+    "day": "2026-01-01",
+    "consumptionKwh": 2.5,
+    "measuredHours": 2,
+    "complete": false,
+    "missingCount": 22
+  },
+  {
+    "buildingId": "B",
+    "day": "2026-01-02",
+    "consumptionKwh": null,
+    "measuredHours": 0,
+    "complete": false,
+    "missingCount": 24
+  }
+]

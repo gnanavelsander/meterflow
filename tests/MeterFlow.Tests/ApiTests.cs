@@ -44,7 +44,13 @@ public sealed partial class ApiTests(PostgresFixture postgres) : IClassFixture<P
     public async Task Health_openapi_and_problem_details_are_available()
     {
         (await client.GetAsync("/health/ready")).EnsureSuccessStatusCode();
-        Assert.Contains("openapi", await client.GetStringAsync("/openapi/v1.json"));
+        var openapi = await client.GetFromJsonAsync<JsonElement>("/openapi/v1.json");
+        Assert.Equal("bearer", openapi.GetProperty("components").GetProperty("securitySchemes").GetProperty("Bearer").GetProperty("scheme").GetString());
+        var submit = openapi.GetProperty("paths").GetProperty("/api/jobs").GetProperty("post");
+        Assert.True(submit.GetProperty("responses").TryGetProperty("202", out _));
+        Assert.Contains(submit.GetProperty("parameters").EnumerateArray(), x => x.GetProperty("name").GetString() == "Idempotency-Key");
+        Assert.True(submit.GetProperty("security")[0].TryGetProperty("Bearer", out _));
+        Assert.Contains("Synthetic campus", await client.GetStringAsync("/openapi/v1.json"));
         var response = await client.GetAsync("/does-not-exist");
         Assert.True(response.Headers.Contains("X-Request-ID"));
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType!.MediaType);
