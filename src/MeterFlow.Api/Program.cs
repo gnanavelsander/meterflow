@@ -1,4 +1,5 @@
 using MeterFlow.Api.Data;
+using MeterFlow.Api.Jobs;
 using MeterFlow.Api.Datasets;
 using MeterFlow.Api.Infrastructure;
 using MeterFlow.Api.Projects;
@@ -27,7 +28,11 @@ builder.Services.AddAuthorization();
 builder.Services.AddDataProtection().SetApplicationName("MeterFlow").PersistKeysToFileSystem(
     new DirectoryInfo(builder.Configuration["DataProtection:KeyPath"] ?? Path.Combine(builder.Environment.ContentRootPath, ".keys")));
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealth>("postgres", tags: ["ready"]);
-builder.Logging.AddJsonConsole();
+builder.Services.AddScoped<JobQueue>();
+builder.Services.AddScoped<JobProcessor>();
+builder.Services.AddHostedService<AnalysisWorker>();
+builder.Logging.ClearProviders();
+builder.Logging.AddJsonConsole(options => options.IncludeScopes = true);
 var app = builder.Build();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
@@ -48,6 +53,7 @@ var api = app.MapGroup("/api").RequireAuthorization(new AuthorizationPolicyBuild
     .RequireAuthenticatedUser().Build());
 api.MapProjects();
 api.MapDatasets();
+api.MapJobs();
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 if (app.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
